@@ -135,7 +135,7 @@ func main() {
     c := cors.New(cors.Options{
 		// Replace the insecure wildcard "*" with your specific frontend URLs.
 		AllowedOrigins: []string{
-			"https://fake-news-verifier-frontend.onrender.com/*", // Your deployed frontend
+			"https://fake-news-verifier-frontend.onrender.com", // Your deployed frontend
 			"http://localhost:5173",                            // Your local development environment
 		},
 		// It's good practice to also allow GET and OPTIONS methods.
