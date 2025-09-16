@@ -128,15 +128,21 @@ func scrapeHandler(w http.ResponseWriter, r *http.Request) {
 
 // --- Main Server Function (THIS IS WHERE THE CHANGES ARE) ---
 func main() {
-	godotenv.Load()
+	_ = godotenv.Load()
     mux := http.NewServeMux()
     mux.HandleFunc("/scrape", scrapeHandler)
 
     c := cors.New(cors.Options{
-    // CHANGE THIS LINE
-    AllowedOrigins: []string{"*"}, 
-    AllowedMethods: []string{"POST"},
-})
+		// Replace the insecure wildcard "*" with your specific frontend URLs.
+		AllowedOrigins: []string{
+			"https://fake-news-verifier-frontend.onrender.com/*", // Your deployed frontend
+			"http://localhost:5173",                            // Your local development environment
+		},
+		// It's good practice to also allow GET and OPTIONS methods.
+		// OPTIONS is required for "preflight" requests that browsers send.
+		AllowedMethods: []string{"POST", "GET", "OPTIONS"},
+		AllowedHeaders: []string{"Content-Type"},
+	})
 
     handler := c.Handler(mux)
 
