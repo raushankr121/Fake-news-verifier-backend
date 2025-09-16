@@ -1,0 +1,1 @@
+This repository contains the backend service for the News Verifier AI project. It's a Go-based server responsible for scraping news articles, analyzing their content using a generative AI model, and providing a classification of the text's objectivity.
