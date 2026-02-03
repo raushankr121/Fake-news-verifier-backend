@@ -10,32 +10,33 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/joho/godotenv"
 	"github.com/chromedp/chromedp"
-	"github.com/rs/cors" // Import the new package
+	"github.com/joho/godotenv"
+	"github.com/rs/cors"
 )
 
-// --- Structs (No Change) ---
-type ScrapeRequest struct {
-	URL string `json:"url"`
+type AnalyzeRequest struct {
+	URL  string `json:"url"`
+	Text string `json:"text"`
 }
+
 type AIRequestPayload struct {
 	Inputs     string   `json:"inputs"`
 	Parameters AIParams `json:"parameters"`
 }
+
 type AIParams struct {
 	CandidateLabels []string `json:"candidate_labels"`
 }
+
 type AIResponse struct {
 	Sequence string    `json:"sequence"`
 	Labels   []string  `json:"labels"`
 	Scores   []float64 `json:"scores"`
 }
 
-// --- analyzeTextWithAI Function (No Change) ---
 func analyzeTextWithAI(text string, apiToken string) (*AIResponse, error) {
-	// ... same as before
-	apiURL := "https://api-inference.huggingface.co/models/MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
+	apiURL := "https://router.huggingface.co/hf-inference/models/facebook/bart-large-mnli"
 
 	payload := AIRequestPayload{
 		Inputs: text,
@@ -68,93 +69,123 @@ func analyzeTextWithAI(text string, apiToken string) (*AIResponse, error) {
 		return nil, err
 	}
 
-	var aiResponse AIResponse
-	if err := json.Unmarshal(body, &aiResponse); err != nil {
-		return nil, err
+	fmt.Println("RAW AI RESPONSE:", string(body))
+
+	type HFError struct {
+		Error string `json:"error"`
+	}
+	var errResp HFError
+	if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error != "" {
+		return nil, fmt.Errorf("API Error: %s", errResp.Error)
 	}
 
-	return &aiResponse, nil
+	type HFResponseItem struct {
+		Label string  `json:"label"`
+		Score float64 `json:"score"`
+	}
+	var rawResponse []HFResponseItem
+
+	if err := json.Unmarshal(body, &rawResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse AI response: %v", err)
+	}
+
+	var labels []string
+	var scores []float64
+
+	for _, item := range rawResponse {
+		labels = append(labels, item.Label)
+		scores = append(scores, item.Score)
+	}
+
+	finalResponse := &AIResponse{
+		Sequence: text,
+		Labels:   labels,
+		Scores:   scores,
+	}
+
+	return finalResponse, nil
 }
 
-// --- scrapeHandler Function (No Change) ---
-func scrapeHandler(w http.ResponseWriter, r *http.Request) {
+func analyzeHandler(w http.ResponseWriter, r *http.Request) {
 	apiToken := os.Getenv("HF_API_TOKEN")
- // Replace with your token if needed
 
-	var req ScrapeRequest
+	var req AnalyzeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-	fmt.Println("1. Decoded URL successfully:", req.URL)
 
-	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), chromedp.DefaultExecAllocatorOptions[:]...)
-	defer cancel()
-
-	
-	ctx, cancel := chromedp.NewContext(allocCtx)
-	defer cancel()
-	
 	var articleText string
-	err := chromedp.Run(ctx,
-		chromedp.Navigate(req.URL),
-		chromedp.WaitVisible(`#content`),
-		chromedp.Text(`#content`, &articleText, chromedp.ByQuery),
-	)
 
-	if err != nil {
-		log.Println("ERROR: Chromedp failed to scrape:", err)
-		http.Error(w, "Failed to scrape the page", http.StatusInternalServerError)
+	if req.Text != "" {
+		fmt.Println("Received direct text input (skipping scrape)")
+		articleText = req.Text
+	} else if req.URL != "" {
+		fmt.Println("Received URL, starting scrape:", req.URL)
+		
+		allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), chromedp.DefaultExecAllocatorOptions[:]...)
+		defer cancel()
+
+		ctx, cancel := chromedp.NewContext(allocCtx)
+		defer cancel()
+
+		err := chromedp.Run(ctx,
+			chromedp.Navigate(req.URL),
+			chromedp.WaitVisible(`#content`),
+			chromedp.Text(`#content`, &articleText, chromedp.ByQuery),
+		)
+
+		if err != nil {
+			log.Println("ERROR: Chromedp failed to scrape:", err)
+			http.Error(w, "Failed to scrape the page", http.StatusInternalServerError)
+			return
+		}
+		fmt.Println("Scraping finished.")
+	} else {
+		http.Error(w, "Please provide either a URL or Text", http.StatusBadRequest)
 		return
 	}
-	fmt.Println("2. Scraping finished. Total characters found:", len(articleText))
-	
+
 	if len(articleText) > 2000 {
 		articleText = articleText[:2000]
 	}
 
-	fmt.Println("3. Sending text to AI for analysis...")
+	fmt.Println("Sending text to AI for analysis...")
+
 	analysis, err := analyzeTextWithAI(articleText, apiToken)
 	if err != nil {
 		log.Println("ERROR: AI analysis failed:", err)
 		http.Error(w, "Failed to analyze the text", http.StatusInternalServerError)
 		return
 	}
-	fmt.Println("4. AI analysis complete!")
 
+	fmt.Println("AI analysis complete!")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(analysis)
 }
 
-// --- Main Server Function (THIS IS WHERE THE CHANGES ARE) ---
 func main() {
-	_ = godotenv.Load()
-    mux := http.NewServeMux()
-    mux.HandleFunc("/scrape", scrapeHandler)
+	godotenv.Load()
 
-    c := cors.New(cors.Options{
-		// Replace the insecure wildcard "*" with your specific frontend URLs.
-		AllowedOrigins: []string{
-			"https://fake-news-verifier-frontend.onrender.com", // Your deployed frontend
-			"http://localhost:5173",                            // Your local development environment
-		},
-		// It's good practice to also allow GET and OPTIONS methods.
-		// OPTIONS is required for "preflight" requests that browsers send.
-		AllowedMethods: []string{"POST", "GET", "OPTIONS"},
-		AllowedHeaders: []string{"Content-Type"},
+	mux := http.NewServeMux()
+	
+	mux.HandleFunc("/analyze", analyzeHandler) 
+	mux.HandleFunc("/scrape", analyzeHandler) 
+
+	c := cors.New(cors.Options{
+		AllowedOrigins: []string{"*"},
+		AllowedMethods: []string{"POST"},
 	})
 
-    handler := c.Handler(mux)
+	handler := c.Handler(mux)
 
-    // --- THIS IS THE NEW LOGIC ---
-    port := os.Getenv("PORT")
-    if port == "" {
-        port = "8080" // Use 8080 as a fallback for local development
-    }
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
 
-    fmt.Println("Starting server on port " + port)
-    // Use the new 'port' variable here instead of a fixed number
-    if err := http.ListenAndServe(":"+port, handler); err != nil {
-        log.Fatal(err)
-    }
+	fmt.Println("Starting server on port " + port)
+	if err := http.ListenAndServe(":"+port, handler); err != nil {
+		log.Fatal(err)
+	}
 }
